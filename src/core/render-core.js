@@ -75,11 +75,82 @@ async function render(_opts = {}) {
   const browser = await createBrowser(opts);
   const page = await browser.newPage();
 
+  const client = await page.target().createCDPSession();
+
+  await client.send('Fetch.enable', {
+    patterns: [
+      {
+        urlPattern: '*',
+        requestStage: 'Response',
+      },
+    ],
+  });
+
+  await client.on('Fetch.requestPaused', async (reqEvent) => {
+    // Retrieve EventID
+    const { requestId } = reqEvent;
+
+    let responseHeaders = reqEvent.responseHeaders || [];
+    let contentType = '';
+
+    // Find and store 'content-type' header
+    for (let elements of responseHeaders) {
+      if (elements.name.toLowerCase() === 'content-type') {
+        contentType = elements.value;
+      }
+    }
+
+    if (contentType.endsWith('html')) {
+      console.log("AAAAA")
+      // Uncomment the line below to log response headers for debugging
+      console.log(reqEvent.responseHeaders);
+
+      // Adding 'content-disposition: attachment' header will tell the browser to download the file instead of opening it in using built-in viewer
+      const foundHeaderIndex = responseHeaders.findIndex(
+        (h) => h.name.toLowerCase() === "content-disposition"
+      );
+      const attachmentHeader = {
+        name: "content-disposition",
+        value: "",
+      };
+      if (foundHeaderIndex) {
+        responseHeaders[foundHeaderIndex] = attachmentHeader;
+      } else {
+        responseHeaders.push(attachmentHeader);
+      }
+
+      /*
+        Fetch.getResponseBody
+        https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-getResponseBody
+        Causes the body of the response to be received from the server and returned as a single string. May only be issued for a request that is paused in the Response stage and is mutually exclusive with takeResponseBodyForInterceptionAsStream. Calling other methods that affect the request or disabling fetch domain before body is received results in an undefined behavior.
+      */
+      const responseObj = await client.send('Fetch.getResponseBody', {
+        requestId,
+      });
+
+      /*
+        Fetch.fulfillRequest
+        https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-fulfillRequest
+        Provides response to the request.
+      */
+      await client.send('Fetch.fulfillRequest', {
+        requestId,
+        responseCode: 200,
+        responseHeaders,
+        body: responseObj.body,
+      });
+    } else {
+      // If the content-type is not what we're looking for, continue the request without modifying the response
+      await client.send('Fetch.continueRequest', { requestId });
+    }
+  });
+
   page.on('console', (...args) => logger.info('PAGE LOG:', ...args));
 
   page.on('error', (err) => {
     logger.error(`Error event emitted: ${err}`);
     logger.error(err.stack);
+    client.send('Fetch.disable');
     browser.close();
   });
 
@@ -113,9 +184,7 @@ async function render(_opts = {}) {
 
     if (opts.cookies && opts.cookies.length > 0) {
       logger.info('Setting cookies..');
-
-      const client = await page.target().createCDPSession();
-
+      
       await client.send('Network.enable');
       await client.send('Network.setCookies', { cookies: opts.cookies });
     }
@@ -200,6 +269,7 @@ async function render(_opts = {}) {
   } finally {
     logger.info('Closing browser..');
     if (!config.DEBUG_MODE) {
+      await client.send('Fetch.disable');
       await browser.close();
     }
   }
