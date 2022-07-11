@@ -10,9 +10,9 @@ BPromise.config({
 });
 
 const app = createApp();
-const server = app.listen(config.PORT, () => {
+const server = app.listen(config.PORT,"0.0.0.0", () => {
   logger.info(
-    'Express server listening on http://localhost:%d/ in %s mode',
+    'Express server listening on http://0.0.0.0:%d/ in %s mode',
     config.PORT,
     app.get('env')
   );
